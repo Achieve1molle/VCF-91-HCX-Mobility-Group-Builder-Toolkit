@@ -1,238 +1,139 @@
-# VCF 9.1 HCX Mobility Group Builder Toolkit Rev 2.2
+# VCF 9.1 HCX Mobility Group Builder Toolkit
 
-PowerShell 7 and WPF toolkit for preparing, validating, previewing, and saving VMware HCX 9.1 Mobility Group drafts through a controlled two-phase workflow.
+A PowerShell 7 and WPF application for discovering workloads, validating destination configuration, scheduling cutover windows, and creating VMware HCX 9.1 Mobility Group drafts. The toolkit is designed for a controlled workflow in VMware Cloud Foundation 9 environments and does not start migrations.
 
-**Primary script:** `VCF_9_1_HCX_Mobility_Group_Builder_Toolkit_Rev_2.2.ps1`  
-**Target platform:** VMware Cloud Foundation 9 with HCX 9.1  
-**Execution environment:** Windows, PowerShell 7, interactive STA session
+> **Current release:** Rev 3.4  
+> **Primary script:** `VCF_9_1_HCX_Mobility_Group_Builder_Toolkit_Rev_3.4.ps1`  
+> **Runtime:** Windows, PowerShell 7, STA, WPF, VCF.PowerCLI
 
-## Rev 2.2 Feature Summary
+## Highlights
 
-- **Automatic vTPM detection:** Source vCenter is authoritative; no vTPM input column is required.
-- **vTPM-aware storage policy:** Separate standard and vTPM policies, effective per-VM visibility, and protected overrides.
-- **Password resiliency:** Credentials remain available while the application is open and are purged on close.
-- **Optional network-mapping CSV:** Validated source-to-destination mappings can be loaded before or after VM import.
-- **Mapping precedence:** Per-VM Override, Imported Mapping, Automatic Exact Match, then Unresolved.
-- **Detailed import reporting:** Scrollable, virtualized, color-coded findings for large VM batches.
-- **Same format as source:** Default disk behavior in Phase I, CSV handoff, and Phase II.
-- **Expanded Phase II storage controls:** Optional global changes plus per-VM datastore, policy, and disk overrides.
-- **Improved Phase II navigation:** Collapsed optional settings, expanded grid, independent scrollbars, virtualization, and frozen identifiers.
-- **Run-folder organization:** Logs, transcripts, debug data, payloads, requests, responses, and placement audits remain grouped by execution.
-- **HCX authentication resiliency:** Refresh before submission and one retry after authorization failure.
+- Connects to HCX Manager, source vCenter, and destination vCenter.
+- Discovers HCX topology, migration direction, Service Mesh, networks, storage, compute, folders, and storage policies.
+- Imports VMs by name with optional Mobility Group numbers.
+- Matches VM names case-insensitively.
+- Detects source VM power state and vTPM configuration.
+- Highlights missing and powered-off workloads for operator review.
+- Supports exact-name network matching, network-mapping CSV input, and per-VM overrides.
+- Supports HCX Assisted vMotion, HCX vMotion, Replication-assisted vMotion, Bulk Migration, Cold Migration, and OS Assisted Migration when returned by HCX.
+- Provides per-group Transfer and Switchover scheduling with calendar controls and Scheduler CSV import.
+- Preserves validated Scheduler state when the current VM list is moved to Save and Create.
+- Builds one payload per populated Mobility Group and creates HCX drafts sequentially.
+- Validates that `transferProfile` and `switchoverProfile` remain JSON arrays.
+- Stores logs, transcripts, REST evidence, payloads, responses, and placement audits in a timestamped run folder.
+- Uses themed inventory, validation, and completion dialogs consistent with the main application.
 
+## Architecture and Flow
 
-## Detailed Wire Workflow
-
-The wire-style sequence below traces the complete operator, HCX, vCenter, and evidence interaction. Solid arrows represent actions or requests; dashed arrows represent returned state or results. `opt`, `alt`, and `loop` frames document optional paths, decisions, validation failures, retries, and repeated per-VM or per-group processing.
+The Mermaid sequence diagram is intentionally rendered as a true sequence diagram. The fenced `mermaid` block is required for GitHub to render the diagram rather than displaying unformatted text.
 
 ```mermaid
 sequenceDiagram
     autonumber
-    actor Operator as Migration Operator
-    participant Toolkit as Automation Host / Rev 2.2 Toolkit
-    participant HCX as Source HCX Manager 9.1
-    participant SrcVC as Source vCenter
-    participant DstVC as Destination vCenter
-    participant Repo as Per-Run Evidence Repository
+    actor Admin as Migration Administrator
+    participant Tool as HCX Builder
+    participant HCX as HCX Manager 9.1
+    participant Src as Source vCenter
+    participant Dst as Destination vCenter
+    participant Evidence as Run Evidence
 
-    rect rgb(245, 242, 255)
-        Note over Operator,Repo: Application startup, prerequisite validation, and secure connection
-        Operator->>Toolkit: Launch PowerShell 7 WPF application in STA mode
-        Toolkit->>Toolkit: Validate PowerShell, STA, WPF, and VCF.PowerCLI
-        Toolkit->>Repo: Create timestamped run folder, log, transcript, and Debug-Artifacts
-        Operator->>Toolkit: Enter or load HCX and vCenter connection details
-        Note over Operator,Toolkit: Passwords remain only while the application is open and are purged on close
-        Toolkit->>HCX: Authenticate through HCX REST
-        HCX-->>Toolkit: Authenticated session and authorization state
-        Toolkit->>SrcVC: Connect to source vCenter
-        SrcVC-->>Toolkit: Source vCenter session
-        Toolkit->>DstVC: Connect to destination vCenter
-        DstVC-->>Toolkit: Destination vCenter session
-        Toolkit->>HCX: Discover topology, site pair, direction, and Service Mesh
-        HCX-->>Toolkit: Current-session migration topology
-        Toolkit->>SrcVC: Retrieve VM inventory and source placement
-        SrcVC-->>Toolkit: VMs, power state, compute, folders, datastores, and hardware
-        Toolkit->>DstVC: Retrieve destination placement and policy inventory
-        DstVC-->>Toolkit: Hosts, clusters, datastores, StoragePods, folders, networks, and SPBM policies
+    rect rgb(20, 35, 45)
+        Note over Admin,Evidence: Connect and discover
+        Admin->>Tool: Launch PowerShell 7 WPF application
+        Tool->>Evidence: Create timestamped run folder and logs
+        Admin->>Tool: Enter or load connection profile
+        Tool->>HCX: Authenticate and discover topology
+        Tool->>Src: Connect and retrieve source inventory
+        Tool->>Dst: Connect and retrieve destination inventory
+        HCX-->>Tool: Direction, site pair, Service Mesh, migration types
+        Src-->>Tool: VMs, power state, vTPM, NICs, source placement
+        Dst-->>Tool: Networks, compute, storage, folders, policies
     end
 
-    rect rgb(237, 245, 255)
-        Note over Operator,Repo: Phase I - Prepare and validate Mobility Group input
-        opt Source and destination network names differ
-            Operator->>Toolkit: Import optional network-mapping CSV
-            Toolkit->>DstVC: Resolve each destination network name against live inventory
-            DstVC-->>Toolkit: Destination name, ID, and entity type
-            alt Mapping CSV is valid
-                Toolkit->>Toolkit: Activate case-insensitive source-to-destination mapping table
-                Toolkit-->>Operator: Report imported and applied mapping counts
-            else Missing, duplicate, conflicting, unresolved, or ambiguous mapping
-                Toolkit-->>Operator: Reject mapping CSV and preserve prior active mapping table
-                Toolkit->>Repo: Log line-level mapping validation details
-            end
+    rect rgb(18, 45, 58)
+        Note over Admin,Evidence: Prepare VM list and destination configuration
+        Admin->>Tool: Import VM CSV
+        loop Each imported VM
+            Tool->>Src: Resolve VM name and inspect inventory
+            Src-->>Tool: VM, vTPM, NIC, power, and placement data
+            Tool->>Tool: Match destination networks and apply defaults
         end
-
-        Operator->>Toolkit: Import VM CSV with VMName and optional MobilityGroupNumber
-        loop Every imported VM
-            Toolkit->>SrcVC: Resolve VM name case-insensitively
-            alt VM is uniquely discovered
-                SrcVC-->>Toolkit: VM identity, power state, source placement, and hardware
-                Toolkit->>SrcVC: Detect vTPM with Get-VTpm
-                alt Get-VTpm is available and succeeds
-                    SrcVC-->>Toolkit: vTPM present or absent
-                else Cmdlet unavailable
-                    Toolkit->>SrcVC: Inspect VM hardware devices for virtual TPM
-                    SrcVC-->>Toolkit: vTPM present or absent
-                else Detection fails
-                    SrcVC-->>Toolkit: Detection error
-                    Toolkit->>Repo: Record fail-closed vTPM diagnostic
-                end
-                Toolkit->>SrcVC: Discover all VM network adapters and source backing IDs
-                SrcVC-->>Toolkit: Adapter, source network, backing identifier, MAC address
-                loop Every VM NIC
-                    alt Per-VM override already exists
-                        Toolkit->>Toolkit: Preserve per-VM destination selection
-                    else Imported mapping matches source name
-                        Toolkit->>Toolkit: Apply imported destination name and authoritative ID
-                    else Exact destination name exists
-                        Toolkit->>Toolkit: Apply automatic exact-name match
-                    else No valid match
-                        Toolkit->>Toolkit: Mark NIC mapping unresolved
-                    end
-                end
-            else VM is missing or ambiguous
-                SrcVC-->>Toolkit: No unique inventory object
-                Toolkit->>Toolkit: Preserve row for operator review
-            end
-        end
-
-        Toolkit-->>Operator: Display detailed scrollable VM Import Summary
-        Note over Operator,Toolkit: Red indicates missing, ambiguous, or failed vTPM detection. Gold indicates powered off.
-        Operator->>Toolkit: Select destination site, compute, datastore, folder, and migration type
-        Operator->>Toolkit: Select standard policy and vTPM policy
-        Operator->>Toolkit: Select disk format, default Same format as source
-        Toolkit->>Toolkit: Apply standard policy to non-vTPM VMs
-        Toolkit->>Toolkit: Apply vTPM policy to detected vTPM VMs
-        Operator->>Toolkit: Review or set per-VM placement, policy, disk, group, and NIC overrides
-        Operator->>Toolkit: Validate Phase I
-        loop Every included VM
-            Toolkit->>Toolkit: Validate VM state, vTPM result, group, placement, policy, disk, and every NIC
-        end
-        alt Any Phase I validation issue
-            Toolkit-->>Operator: Block CSV creation and display row-level errors
-            Toolkit->>Repo: Record validation failures
-        else All included VMs pass
-            Operator->>Toolkit: Create Mobility Group CSV
-            Toolkit->>Repo: Write authoritative Phase I CSV with vTPM, policy, disk, and mapping provenance
-            Toolkit-->>Operator: Report Phase I CSV location
-        end
+        Tool->>Evidence: Save VM inventory findings CSV
+        Tool-->>Admin: Display themed VM Import Summary
+        Admin->>Tool: Review highlighted rows and destination settings
+        Admin->>Tool: Validate configuration
     end
 
-    rect rgb(239, 255, 242)
-        Note over Operator,Repo: Phase II - Restore, optionally revise, preview, and save drafts
-        Operator->>Toolkit: Import approved Phase I CSV
-        Toolkit->>DstVC: Refresh destination compute, storage, policy, and network inventory
-        DstVC-->>Toolkit: Current destination inventory
-        Toolkit->>HCX: Refresh destination network and topology context
-        HCX-->>Toolkit: Current sites, Service Mesh, and available network metadata
-        Toolkit->>Toolkit: Restore VM groups, placement, vTPM, policy, disk, and per-NIC mappings
-        Toolkit-->>Operator: Display expanded scrollable VM grid with frozen identifying columns
-
-        opt Approved destination changes are required after Phase I
-            Operator->>Toolkit: Expand optional Destination Settings
-            Operator->>Toolkit: Update compute, storage, standard policy, vTPM policy, or disk format
-            Operator->>Toolkit: Apply destination defaults to applicable non-overridden rows
-            Operator->>Toolkit: Set Phase II per-VM storage, policy, or disk overrides
-        end
-
-        Operator->>Toolkit: Set base group name, group count, migration, and switchover options
-        Operator->>Toolkit: Validate Phase II
-        Toolkit->>Toolkit: Verify topology, populated groups, included VMs, storage, policy, and network IDs
-        alt Phase II validation fails
-            Toolkit-->>Operator: Block Preview and Save and report failures
-        else Phase II validation passes
-            Operator->>Toolkit: Preview all selected Mobility Group payloads
-            loop Group 1 through selected group count
-                Toolkit->>Toolkit: Capture original Include state and select current group members
-                Toolkit->>SrcVC: Re-read authoritative VM, NIC, backing, and disk details
-                SrcVC-->>Toolkit: Current source workload details
-                Toolkit->>Toolkit: Build group defaults and per-VM migration intents
-                Toolkit->>Toolkit: Normalize host, cluster, datastore, and StoragePod IDs
-                Toolkit->>Repo: Write payload JSON and placement audit JSON
-            end
-            Toolkit->>Toolkit: Restore original Include state
-            Toolkit-->>Operator: Report preview success for every selected group
-        end
-
-        Operator->>Toolkit: Select Save Draft to HCX
-        Toolkit->>HCX: Refresh authentication before submission
-        HCX-->>Toolkit: Current authorization state
-        Toolkit-->>Operator: Display complete draft summary and request confirmation
-        loop Every successfully built Mobility Group
-            Toolkit->>HCX: Submit one Mobility Group draft payload
-            alt Draft request succeeds
-                HCX-->>Toolkit: Draft creation result
-                Toolkit->>Repo: Write request, response, and success log
-            else Authorization failure
-                HCX-->>Toolkit: Unauthorized or forbidden response
-                Toolkit->>HCX: Refresh authentication and retry once
-                HCX-->>Toolkit: Final draft creation result
-                Toolkit->>Repo: Write retry evidence and final result
-            else Other HCX failure
-                HCX-->>Toolkit: Error response
-                Toolkit->>Repo: Write sanitized request, response, and failure details
-            end
-        end
-        Toolkit-->>Operator: Display created-draft summary and active run-folder location
-        Operator->>HCX: Review each draft before starting migration activity
+    rect rgb(26, 50, 43)
+        Note over Admin,Evidence: Configure schedules
+        Admin->>Tool: Configure schedules or import Scheduler CSV
+        Tool->>Tool: Apply migration-type scheduling rules
+        Admin->>Tool: Validate Schedules
+        Tool->>Tool: Convert dates and times to epoch milliseconds
+        Tool-->>Admin: Scheduler Pass or detailed findings
     end
 
-    rect rgb(255, 248, 235)
-        Note over Operator,Repo: Application shutdown
-        Operator->>Toolkit: Close application
-        Toolkit->>SrcVC: Disconnect source vCenter session
-        Toolkit->>DstVC: Disconnect destination vCenter session
-        Toolkit->>HCX: Clear HCX session and authorization headers
-        Toolkit->>Toolkit: Clear password controls and in-memory credential state
-        Toolkit->>Repo: Stop transcript and finalize run evidence
+    rect rgb(40, 38, 58)
+        Note over Admin,Evidence: Build and create HCX drafts
+        Admin->>Tool: Use Current VM List
+        Admin->>Tool: Validate Mobility Groups
+        Admin->>Tool: Preview payloads
+        loop Each populated Mobility Group
+            Tool->>Src: Re-read current VM and NIC details
+            Tool->>Tool: Build and normalize HCX payload
+            Tool->>Evidence: Save payload and placement audit
+        end
+        Admin->>Tool: Create Mobility Group Drafts in HCX
+        Tool->>HCX: Refresh authentication
+        loop Each validated payload
+            Tool->>Tool: Assert JSON collection contract
+            Tool->>HCX: POST Mobility Group draft
+            HCX-->>Tool: Draft ID and migration IDs
+            Tool->>Evidence: Save request and response
+        end
+        Tool-->>Admin: Display themed creation summary
+        Admin->>HCX: Review drafts before manual execution
     end
 ```
 
-The same source is available as `VCF_9_1_HCX_Mobility_Group_Builder_Toolkit_Rev_2.2_Wire_Workflow.mmd` for Mermaid Live Editor, GitHub, or documentation automation.
-
-## Purpose and Operating Model
-
-The toolkit creates HCX drafts rather than starting migrations. Phase I discovers workloads and records validated destination decisions in an authoritative CSV. Phase II imports that CSV, preserves the selections, permits optional approved changes, previews every selected payload, and saves drafts only after validation.
-
 ## Requirements
 
-- Windows administrative workstation with an interactive desktop.
-- PowerShell 7 or later, STA mode, and WPF.
+- Windows workstation with an interactive desktop.
+- PowerShell 7 or later running in STA mode.
 - VCF.PowerCLI.
-- HTTPS access to source HCX Manager and both vCenter systems.
-- Read permissions for required inventories and permission to create HCX drafts.
-- Write access to the configured output location.
+- HTTPS connectivity to HCX Manager and both vCenter systems.
+- Read access to source and destination inventories.
+- Permission to create HCX Mobility Group drafts.
+- Write access to the output directory.
 
 ## Launch
 
 ```powershell
 Set-Location C:\Script
+
 pwsh.exe -NoProfile -ExecutionPolicy Bypass -STA `
-  -File ".\VCF_9_1_HCX_Mobility_Group_Builder_Toolkit_Rev_2.2.ps1"
+  -File '.\VCF_9_1_HCX_Mobility_Group_Builder_Toolkit_Rev_3.4-Themed-Dialogs-and-Policy-Stability.ps1'
 ```
 
-## Phase I
+## Quick Start
 
-1. Enter or load HCX and vCenter connection data.
+1. Enter or load the HCX and vCenter connection details.
 2. Select **Connect and Load Inventory**.
-3. Optionally import a network-mapping CSV.
-4. Import the VM CSV.
-5. Review the detailed VM Import Summary.
-6. Select destination site, compute, storage, standard policy, vTPM policy, folder, migration type, and disk format.
-7. Review per-VM and per-NIC exceptions.
-8. Validate Phase I.
-9. Create and retain the authoritative CSV.
+3. Import the VM CSV.
+4. Review highlighted missing or powered-off VM rows.
+5. Configure network, destination, and storage settings.
+6. Validate the VM configuration.
+7. Configure schedules manually or import a Scheduler CSV.
+8. Select **Validate Schedules** and confirm **Scheduler: Pass**.
+9. Open **Save and Create**, then select **Use Current VM List**.
+10. Validate the configuration and Mobility Groups.
+11. Preview payloads.
+12. Create Mobility Group drafts in HCX.
+13. Review every draft in HCX Manager before manually starting migration activity.
 
-### VM input CSV
+## Input Examples
+
+### VM import CSV
 
 ```csv
 VMName,MobilityGroupNumber
@@ -240,9 +141,7 @@ appserver01,1
 secureapp01,2
 ```
 
-VM-name matching is case-insensitive. vTPM is discovered from live source-vCenter inventory.
-
-### Network-mapping CSV
+### Network mapping CSV
 
 ```csv
 SourceNetworkName,DestinationNetworkName
@@ -250,64 +149,64 @@ Legacy-App-Network,New-App-Network
 Legacy-Database-Network,New-Database-Network
 ```
 
-The importer rejects missing values, duplicate or conflicting source mappings, unresolved destinations, and ambiguous destination names. Per-VM mappings remain the highest-precedence override.
+### Scheduler CSV
 
-### vTPM and policy behavior
+```csv
+MobilityGroupNumber,TransferMode,TransferStartDate,TransferStartTime,TransferExpiryDate,TransferExpiryTime,SwitchoverMode,SwitchoverStartDate,SwitchoverStartTime,SwitchoverEndDate,SwitchoverEndTime
+1,Not Applicable,,,,,Set Switchover Schedule,2026-09-20,21:00,2026-09-21,01:00
+2,Set Transfer Schedule,2026-09-20,18:00,2026-09-21,06:00,Set Switchover Schedule,2026-09-21,21:00,2026-09-22,01:00
+```
 
-Detection uses `Get-VTpm` when available and VM hardware inspection as a fallback. Unknown status is not converted to zero. Standard VMs receive the standard policy, detected vTPM VMs receive the vTPM policy, and explicit per-VM policy selections remain protected.
+Accepted date formats are `yyyy-MM-dd`, `M/d/yyyy`, and `MM/dd/yyyy`. Times use 24-hour `HH:mm` format. Transfer fields are ignored when the selected migration type does not support Transfer scheduling.
 
-### Disk format
+## Safety Model
 
-The default is **Same format as source**. Phase I exports the value and Phase II restores it.
+- The toolkit creates drafts only.
+- **No Transfer Schedule** writes an empty Transfer schedule and does not start migration activity.
+- The application does not select **Run** in HCX Manager.
+- Passwords are not written to profile JSON, CSV, payload, or intended audit output.
+- Scheduler, placement, network, policy, and JSON collection checks run before submission.
+- Drafts should be reviewed in HCX Manager before execution.
 
-## Phase II
+## Evidence
 
-1. Import the approved Phase I CSV.
-2. Set the base group name and group count.
-3. Keep Destination Settings collapsed unless an approved change is required.
-4. Review the virtualized, scrollable VM grid.
-5. Review migration and switchover options.
-6. Validate Phase II.
-7. Preview every selected group.
-8. Review payload and audit evidence.
-9. Save drafts to HCX and verify each draft.
+Each launch creates a folder similar to:
 
-Phase II supports per-VM destination-storage, effective-policy, and disk-format overrides. Global destination defaults do not overwrite Phase II per-VM overrides.
+```text
+HCX91-MobilityCSV-Run-YYYYMMDD-HHMMSS
+```
 
-## Evidence and Credential Handling
+Typical contents include:
 
-Each launch creates `HCX91-MobilityCSV-Run-YYYYMMDD-HHMMSS`. The folder can contain the operational log, transcript, Debug-Artifacts, payloads, request and response JSON, Host and StoragePod audits, and compute-ID normalization evidence.
-
-Passwords are not stored in connection-profile JSON. Password entries remain available only while the application is open, then password controls, HCX session data, authorization headers, and connected sessions are cleared on close.
-
-## Troubleshooting Highlights
-
-- Use `${line}:` when a PowerShell interpolated variable is followed by a colon.
-- Keep optional Phase II Destination Settings collapsed to maximize VM-grid height.
-- Review failed vTPM detection rather than treating unknown status as no vTPM.
-- Confirm destination network names resolve uniquely before importing the mapping CSV.
-- Confirm the active run folder is writable if audit placement fails.
-
-## Release Notes
-
-### Rev 2.2
-
-Rev 2.2 adds automatic vTPM detection, separate standard and vTPM policies, effective per-VM policy overrides, detailed VM import reporting, large-batch virtualization, Same format as source defaults, optional validated network-mapping CSV, enhanced Phase II storage controls, expanded Phase II navigation, application-lifetime credential resiliency, run-folder audit organization, authentication refresh, and controlled authorization retry.
+```text
+HCX91-MobilityCSV-*.log
+HCX91-PowerShell-Transcript-*.log
+HCX91-VM-Import-Inventory-Findings-*.csv
+HCX91-Host-StoragePod-Audit-*.json
+HCX91-<Group>-Payload.json
+HCX91-<Group>-Request.json
+HCX91-<Group>-Response.json
+Debug-Artifacts\*.json
+```
 
 ## Repository Layout
 
 ```text
 /
-├── VCF_9_1_HCX_Mobility_Group_Builder_Toolkit_Rev_2.2.ps1
+├── VCF_9_1_HCX_Mobility_Group_Builder_Toolkit_Rev_3.4-Themed-Dialogs-and-Policy-Stability.ps1
 ├── README.md
 ├── Wiki.md
-├── VCF_9_1_HCX_Mobility_Group_Builder_Toolkit_Rev_2.2_Wire_Workflow.mmd
 ├── examples/
 │   ├── vm-import.example.csv
-│   └── network-mapping.example.csv
+│   ├── network-mapping.example.csv
+│   └── scheduler-import.example.csv
 └── screenshots/
-    ├── phase1-prepare.png
     ├── vm-import-summary.png
-    └── phase2-create.png
+    ├── scheduler.png
+    └── mobility-group-completion.png
 ```
+
+## Current Release Notes
+
+Rev 3.4 includes the complete HCX 9.1 migration-type inventory, per-group Scheduler controls, Scheduler CSV import, validated Scheduler-state preservation, JSON array enforcement for Transfer and Switchover profiles, missing and powered-off VM highlighting, expanded connection-state display, deterministic storage-policy restoration, and themed inventory and completion dialogs.
 
