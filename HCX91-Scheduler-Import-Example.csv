@@ -1,0 +1,4 @@
+﻿MobilityGroupNumber,TransferMode,TransferStartDate,TransferStartTime,TransferExpiryDate,TransferExpiryTime,SwitchoverMode,SwitchoverStartDate,SwitchoverStartTime,SwitchoverEndDate,SwitchoverEndTime
+1,Set Transfer Schedule,9/18/2026,18:00,9/19/2026,6:00,Set Switchover Schedule,9/19/2026,21:00,9/20/2026,1:00
+2,Set Transfer Schedule,9/18/2026,18:00,9/19/2026,6:00,Set Switchover Schedule,9/20/2026,21:00,9/21/2026,1:00
+3,Set Transfer Schedule,9/18/2026,18:00,9/19/2026,6:00,Set Switchover Schedule,9/20/2026,21:00,9/21/2026,1:00
